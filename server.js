@@ -3,7 +3,7 @@ const path = require('node:path');
 const express = require('express');
 const { db, getSetting, setSetting, tx } = require('./src/db');
 const sec = require('./src/security');
-const { authHeaders, openStream, readStream, finalizeBlocks, newStreamState } = require('./src/upstream');
+const { authHeaders, endpointFor, readJsonReply, readOpenAIStream, toOpenAIMessages, openStream, readStream, finalizeBlocks, newStreamState } = require('./src/upstream');
 
 const ON_RAILWAY = !!(process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT);
 const PORT = Number(process.env.PORT || 3000);
@@ -12,16 +12,49 @@ const SETUP_TOKEN = process.env.SETUP_TOKEN || '';
 const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY === '1' || ON_RAILWAY);
 
+// Read a variable tolerantly: trims spaces and stray surrounding quotes from pasted values.
+const envVal = (name) => {
+  const v = process.env[name] ?? process.env[name.toLowerCase()];
+  return v == null ? '' : String(v).trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+};
+const ADMIN_USERNAME = envVal('ADMIN_USERNAME');
+const ADMIN_PASSWORD = envVal('ADMIN_PASSWORD');
+
+// What the server can see (booleans only, never values) to help diagnose hosted installs.
+function envReport() {
+  return {
+    railway: ON_RAILWAY,
+    service: process.env.RAILWAY_SERVICE_NAME || null,
+    environment: process.env.RAILWAY_ENVIRONMENT_NAME || null,
+    ADMIN_USERNAME: !!ADMIN_USERNAME,
+    ADMIN_PASSWORD: !!ADMIN_PASSWORD,
+    passwordLongEnough: ADMIN_PASSWORD.length >= 10,
+    usernameValid: /^[a-zA-Z0-9._-]{3,32}$/.test(ADMIN_USERNAME),
+    SETUP_TOKEN: !!SETUP_TOKEN,
+    APP_SECRET: !!process.env.APP_SECRET,
+    volume: process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || null,
+    adminLikeVars: Object.keys(process.env).filter(k => /admin|setup/i.test(k)),
+  };
+}
+
 // Create the first admin from environment variables (safest for hosted installs).
-if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD && db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
-  if (process.env.ADMIN_PASSWORD.length < 10) console.error('  ADMIN_PASSWORD must be at least 10 characters. Admin not created.');
-  else {
-    db.prepare('INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?,?,?,?,?)')
-      .run(process.env.ADMIN_USERNAME, process.env.ADMIN_USERNAME, sec.hashPassword(process.env.ADMIN_PASSWORD), 'admin', Date.now());
-    console.log(`  Created admin account "${process.env.ADMIN_USERNAME}" from environment variables.`);
+let bootstrapProblem = null;
+if (db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 0) {
+  const r = envReport();
+  console.log('\n  Startup check:', JSON.stringify(r));
+  if (ADMIN_USERNAME || ADMIN_PASSWORD) {
+    if (!ADMIN_USERNAME) bootstrapProblem = 'ADMIN_PASSWORD is set but ADMIN_USERNAME is missing.';
+    else if (!ADMIN_PASSWORD) bootstrapProblem = 'ADMIN_USERNAME is set but ADMIN_PASSWORD is missing.';
+    else if (!r.usernameValid) bootstrapProblem = 'ADMIN_USERNAME must be 3-32 letters, numbers, dots, dashes or underscores (no spaces).';
+    else if (!r.passwordLongEnough) bootstrapProblem = 'ADMIN_PASSWORD must be at least 10 characters.';
+    else {
+      db.prepare('INSERT INTO users (username, display_name, password_hash, role, created_at) VALUES (?,?,?,?,?)')
+        .run(ADMIN_USERNAME, ADMIN_USERNAME, sec.hashPassword(ADMIN_PASSWORD), 'admin', Date.now());
+      console.log(`  Created admin account "${ADMIN_USERNAME}" from environment variables.`);
+    }
+    if (bootstrapProblem) console.error('  Admin not created: ' + bootstrapProblem);
   }
 }
-app.disable('x-powered-by');
 
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -162,7 +195,8 @@ function buildApiMessages(chatId) {
 // ---------- setup & auth ----------
 app.get('/api/setup-status', (req, res) => {
   const n = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
-  res.json({ needsSetup: n === 0, tokenRequired: n === 0 && (!!SETUP_TOKEN || ON_RAILWAY), notice: getSetting('staff_notice') || '' });
+  res.json({ needsSetup: n === 0, tokenRequired: n === 0 && (!!SETUP_TOKEN || ON_RAILWAY), notice: getSetting('staff_notice') || '',
+    ...(n === 0 ? { env: envReport(), problem: bootstrapProblem } : {}) });
 });
 
 app.post('/api/setup', (req, res) => {
@@ -206,7 +240,7 @@ app.post('/api/logout', (req, res) => {
 app.get('/api/me', sec.requireUser, (req, res) => {
   res.json({
     user: publicUser(req.user),
-    models: modelsFor(req.user).map(m => ({ id: m.id, label: m.label, input_price: m.input_price, output_price: m.output_price, max_tokens: m.max_tokens })),
+    models: modelsFor(req.user).map(m => ({ id: m.id, label: m.label, input_price: m.input_price, output_price: m.output_price, max_tokens: m.max_tokens, api_format: m.api_format })),
     default_system_prompt: getSetting('default_system_prompt') || '',
     notice: getSetting('staff_notice') || '',
   });
@@ -321,16 +355,19 @@ app.post('/api/chats/:id/send', sec.requireUser, async (req, res) => {
   const messages = buildApiMessages(chat.id);
   if (!messages.length) return bad(res, 'There is no message to send.');
 
+  const isOpenAI = model.api_format === 'openai';
   const budget = Math.max(1024, Math.min(Number(body.thinkingBudget) || 8000, 64000));
-  const payload = {
-    model: model.id,
-    max_tokens: wantThinking ? Math.max(model.max_tokens, budget + 4096) : model.max_tokens,
-    messages,
-  };
   const system = chat.system_prompt?.trim();
-  if (system) payload.system = system;
-  if (wantThinking) payload.thinking = { type: 'enabled', budget_tokens: budget };
-  if (wantSearch) payload.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
+  let payload;
+  if (isOpenAI) {
+    // OpenAI chat/completions: max tokens left to the provider's default (parameter names differ by model family).
+    payload = { model: model.id, messages: toOpenAIMessages(messages, system) };
+  } else {
+    payload = { model: model.id, max_tokens: wantThinking ? Math.max(model.max_tokens, budget + 4096) : model.max_tokens, messages };
+    if (system) payload.system = system;
+    if (wantThinking) payload.thinking = { type: 'enabled', budget_tokens: budget };
+    if (wantSearch) payload.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
+  }
 
   // Stream to the browser as Server-Sent Events.
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -342,10 +379,12 @@ app.post('/api/chats/:id/send', sec.requireUser, async (req, res) => {
   let key = null, stopped = false, errorMsg = null, started = false;
   const state = newStreamState();
   try {
-    const opened = await openStream(payload, controller.signal, (label) => emit({ type: 'key', label, switched: true }));
+    const opened = await openStream(payload, controller.signal, (label) => emit({ type: 'key', label, switched: true }), isOpenAI ? 'openai' : 'anthropic');
     key = opened.key; started = true;
     emit({ type: 'key', label: key.label });
-    await readStream(opened.response, emit, state);
+    if (isOpenAI && (wantSearch || wantThinking)) emit({ type: 'notice', message: 'Web search and the thinking budget only apply to Claude models on the Anthropic format.' });
+    if (opened.nonStream) await readJsonReply(opened.response, emit, state);
+    else await (isOpenAI ? readOpenAIStream : readStream)(opened.response, emit, state);
   } catch (e) {
     if (controller.signal.aborted) stopped = true;
     else errorMsg = e.message || 'The request failed.';
@@ -515,12 +554,16 @@ admin.post('/keys/:id/reset', (req, res) => {
 admin.post('/keys/:id/test', async (req, res) => {
   const k = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(Number(req.params.id));
   if (!k) return bad(res, 'Key not found.', 404);
-  const model = db.prepare('SELECT * FROM models WHERE enabled = 1 ORDER BY sort, label LIMIT 1').get();
+  const model = (req.body?.model && db.prepare('SELECT * FROM models WHERE id = ?').get(String(req.body.model)))
+    || db.prepare('SELECT * FROM models WHERE enabled = 1 ORDER BY sort, label LIMIT 1').get();
   if (!model) return bad(res, 'Enable at least one model first.');
   try {
-    const r = await fetch(k.endpoint || getSetting('default_endpoint'), {
+    const secret = sec.decrypt(k.key_enc);
+    const isOpenAI = model.api_format === 'openai';
+    const r = await fetch(endpointFor(k, isOpenAI ? 'openai' : 'anthropic'), {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...authHeaders(sec.decrypt(k.key_enc)), 'anthropic-version': getSetting('anthropic_version') || '2023-06-01' },
+      headers: isOpenAI ? { 'content-type': 'application/json', authorization: `Bearer ${secret}` }
+                        : { 'content-type': 'application/json', ...authHeaders(secret), ...(getSetting('anthropic_version')?.trim() ? { 'anthropic-version': getSetting('anthropic_version').trim() } : {}) },
       body: JSON.stringify({ model: model.id, max_tokens: 8, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
       signal: AbortSignal.timeout(30000),
     });
@@ -542,26 +585,44 @@ admin.post('/models', (req, res) => {
   if (!b.id?.trim() || !b.label?.trim()) return bad(res, 'A model needs an ID and a display name.');
   if (db.prepare('SELECT 1 FROM models WHERE id = ?').get(b.id.trim())) return bad(res, 'That model ID already exists.');
   const max = db.prepare('SELECT COALESCE(MAX(sort), 0) AS m FROM models').get().m;
-  db.prepare('INSERT INTO models (id, label, input_price, output_price, max_tokens, enabled, sort) VALUES (?,?,?,?,?,?,?)')
-    .run(b.id.trim(), b.label.trim(), Number(b.input_price) || 0, Number(b.output_price) || 0, Number(b.max_tokens) || 16000, b.enabled === false ? 0 : 1, max + 1);
+  const fmtIn = b.api_format === 'openai' ? 'openai' : b.api_format === 'anthropic' ? 'anthropic' : (/claude/i.test(b.id) ? 'anthropic' : 'openai');
+  db.prepare('INSERT INTO models (id, label, input_price, output_price, max_tokens, enabled, sort, api_format) VALUES (?,?,?,?,?,?,?,?)')
+    .run(b.id.trim(), b.label.trim(), Number(b.input_price) || 0, Number(b.output_price) || 0, Number(b.max_tokens) || 16000, b.enabled === false ? 0 : 1, max + 1, fmtIn);
   res.json({ ok: true });
 });
 admin.put('/models/:id', (req, res) => {
   const m = db.prepare('SELECT * FROM models WHERE id = ?').get(req.params.id);
   if (!m) return bad(res, 'Model not found.', 404);
   const b = req.body || {};
-  db.prepare('UPDATE models SET label = ?, input_price = ?, output_price = ?, max_tokens = ?, enabled = ?, sort = ? WHERE id = ?')
+  db.prepare('UPDATE models SET label = ?, input_price = ?, output_price = ?, max_tokens = ?, enabled = ?, sort = ?, api_format = ? WHERE id = ?')
     .run(b.label?.trim() || m.label, b.input_price ?? m.input_price, b.output_price ?? m.output_price, b.max_tokens ?? m.max_tokens,
-      b.enabled === undefined ? m.enabled : (b.enabled ? 1 : 0), b.sort ?? m.sort, m.id);
+      b.enabled === undefined ? m.enabled : (b.enabled ? 1 : 0), b.sort ?? m.sort, ['anthropic', 'openai'].includes(b.api_format) ? b.api_format : m.api_format, m.id);
   res.json({ ok: true });
+});
+// Ask the provider which models this key can use (Tokenhot is OpenAI-compatible: GET /v1/models).
+admin.get('/models/remote', async (req, res) => {
+  const k = db.prepare('SELECT * FROM api_keys WHERE enabled = 1 ORDER BY priority, id LIMIT 1').get();
+  if (!k) return bad(res, 'Add an API key first.');
+  const endpoint = k.endpoint || getSetting('default_endpoint');
+  const url = endpoint.replace(/\/messages\/?$/, '/models');
+  try {
+    const r = await fetch(url, { headers: { ...authHeaders(sec.decrypt(k.key_enc)), ...(getSetting('anthropic_version')?.trim() ? { 'anthropic-version': getSetting('anthropic_version').trim() } : {}) }, signal: AbortSignal.timeout(20000) });
+    const text = await r.text();
+    if (!r.ok) return bad(res, `The provider didn't return a model list (HTTP ${r.status}). Check its website for model names instead.`);
+    const j = J(text, {});
+    const list = (Array.isArray(j.data) ? j.data : Array.isArray(j) ? j : []).map(m => (typeof m === 'string' ? m : m.id)).filter(Boolean);
+    const existing = new Set(db.prepare('SELECT id FROM models').all().map(m => m.id));
+    res.json({ url, models: [...new Set(list)].sort().map(id => ({ id, claude: /claude/i.test(id), format: /claude/i.test(id) ? 'anthropic' : 'openai', added: existing.has(id) })) });
+  } catch (e) { bad(res, `Couldn't reach ${url}: ${e.message}`); }
 });
 admin.delete('/models/:id', (req, res) => { db.prepare('DELETE FROM models WHERE id = ?').run(req.params.id); res.json({ ok: true }); });
 
-const SETTING_KEYS = ['default_endpoint', 'anthropic_version', 'auth_header', 'key_cooldown_seconds', 'web_search_price_per_1000', 'staff_notice', 'default_system_prompt'];
+const SETTING_KEYS = ['default_endpoint', 'openai_endpoint', 'anthropic_version', 'auth_header', 'key_cooldown_seconds', 'web_search_price_per_1000', 'staff_notice', 'default_system_prompt'];
 admin.get('/settings', (req, res) => res.json(Object.fromEntries(SETTING_KEYS.map(k => [k, getSetting(k)]))));
 admin.put('/settings', (req, res) => {
   const b = req.body || {};
-  if (b.default_endpoint !== undefined && !/^https?:\/\/\S+$/.test(b.default_endpoint)) return bad(res, 'The endpoint must be a full URL starting with https://');
+  for (const f of ['default_endpoint', 'openai_endpoint'])
+    if (b[f] !== undefined && !/^https?:\/\/\S+$/.test(b[f])) return bad(res, 'Endpoints must be full URLs starting with https://');
   if (b.auth_header !== undefined && !['x-api-key', 'bearer', 'both'].includes(b.auth_header)) return bad(res, 'Pick a valid auth header option.');
   SETTING_KEYS.forEach(k => { if (b[k] !== undefined) setSetting(k, b[k]); });
   res.json({ ok: true });

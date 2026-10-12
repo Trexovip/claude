@@ -4,7 +4,13 @@ const { db, getSetting } = require('./db');
 const { decrypt } = require('./security');
 
 // Errors that mean "this key can't serve right now, try the next one".
+// The gateway doesn't offer this model: another key on the same gateway won't help, and the key isn't broken.
+function isModelProblem(bodyText) {
+  return /no available channel|model[^.]{0,40}(not found|not exist|does not exist|not supported|unsupported|unavailable|not available)|invalid model|unknown model|model_not_found/i.test(bodyText);
+}
+
 function isKeyProblem(status, bodyText) {
+  if (isModelProblem(bodyText)) return false;
   if ([401, 402, 403, 429, 529].includes(status)) return true;
   if (status >= 500) return true; // gateway/upstream outage: worth trying another key
   if (status === 400 && /credit|balance|quota|insufficient|billing/i.test(bodyText)) return true;
@@ -39,15 +45,23 @@ function shortError(status, text) {
  * Open a streaming request, trying each usable key in priority order.
  * Returns { response, key } with a 2xx streaming response, or throws.
  */
-async function openStream(payload, signal, onKeySwitch) {
+// Where a key sends a request for a given format.
+function endpointFor(key, format) {
+  if (format === 'openai') {
+    if (key.endpoint && /\/messages\/?$/.test(key.endpoint)) return key.endpoint.replace(/\/messages\/?$/, '/chat/completions');
+    return getSetting('openai_endpoint') || 'https://api.tokenhot.ai/v1/chat/completions';
+  }
+  return key.endpoint || getSetting('default_endpoint');
+}
+
+async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
   const keys = usableKeys();
   if (keys.length === 0) {
     const any = db.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE enabled = 1').get().n;
     throw new Error(any ? 'All API keys are cooling down after errors. Try again in a few minutes, or add another key in Admin > API keys.'
                         : 'No API keys are set up. An admin needs to add one in Admin > API keys.');
   }
-  const defaultEndpoint = getSetting('default_endpoint');
-  const version = getSetting('anthropic_version') || '2023-06-01';
+  const version = (getSetting('anthropic_version') ?? '2023-06-01').trim(); // blank = header not sent
   const cooldownMs = Number(getSetting('key_cooldown_seconds') || 300) * 1000;
   const errors = [];
 
@@ -58,17 +72,18 @@ async function openStream(payload, signal, onKeySwitch) {
     catch { errors.push(`${key.label}: could not decrypt (secret.key changed?)`); continue; }
 
     if (i > 0 && onKeySwitch) onKeySwitch(key.label);
-    let res;
+    let res, headers, body;
     try {
-      res = await fetch(key.endpoint || defaultEndpoint, {
+      headers = format === 'openai'
+        ? { 'content-type': 'application/json', authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
+        : { 'content-type': 'application/json', ...authHeaders(secret), ...(version ? { 'anthropic-version': version } : {}), accept: 'text/event-stream' };
+      body = format === 'openai'
+        ? { ...payload, stream: true, stream_options: { include_usage: true } }
+        : { ...payload, stream: true };
+      res = await fetch(endpointFor(key, format), {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...authHeaders(secret),
-          'anthropic-version': version,
-          'accept': 'text/event-stream',
-        },
-        body: JSON.stringify({ ...payload, stream: true }),
+        headers,
+        body: JSON.stringify(body),
         signal,
       });
     } catch (e) {
@@ -97,7 +112,24 @@ async function openStream(payload, signal, onKeySwitch) {
       errors.push(`${key.label}: ${msg}`);
       continue;
     }
+    // Some gateway channels only serve non-streaming requests: retry once without streaming.
+    if (isModelProblem(text)) {
+      try {
+        const nsHeaders = { ...headers, accept: 'application/json' };
+        const nsBody = { ...body }; delete nsBody.stream; delete nsBody.stream_options;
+        const r2 = await fetch(endpointFor(key, format), { method: 'POST', headers: nsHeaders, body: JSON.stringify(nsBody), signal });
+        if (r2.ok) {
+          db.prepare('UPDATE api_keys SET last_used_at = ?, request_count = request_count + 1, last_error = NULL WHERE id = ?').run(Date.now(), key.id);
+          return { response: r2, key, nonStream: true };
+        }
+      } catch (e) { if (signal?.aborted) throw e; }
+    }
     // A request problem (bad model name, unsupported tool, etc.): switching keys won't help.
+    if (isModelProblem(text)) {
+      const err = new Error(`This model isn't available through your API provider (${payload.model}). Pick another model, or ask an admin to update Admin › Models. Details: ${msg}`);
+      err.requestError = true;
+      throw err;
+    }
     db.prepare('UPDATE api_keys SET last_error = ? WHERE id = ?').run(msg, key.id);
     const err = new Error(msg);
     err.requestError = true;
@@ -194,6 +226,91 @@ async function readStream(response, emit, state = newStreamState()) {
   return state;
 }
 
+// OpenAI-style stream (chat/completions). Fills the same state shape: block 0 = reasoning, block 1 = text.
+async function readOpenAIStream(response, emit, state = newStreamState()) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const think = state.blocks[0] = { type: 'thinking', thinking: '' };
+  const text = state.blocks[1] = { type: 'text', text: '', citations: [] };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.search(/\r?\n\r?\n/)) !== -1) {
+      const raw = buffer.slice(0, idx); buffer = buffer.slice(idx).replace(/^\r?\n\r?\n/, '');
+      const data = raw.split(/\r?\n/).filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('');
+      if (!data || data === '[DONE]') continue;
+      let evt; try { evt = JSON.parse(data); } catch { continue; }
+      if (evt.error) throw new Error(evt.error.message || JSON.stringify(evt.error));
+      const ch = evt.choices?.[0];
+      const d = ch?.delta || {};
+      const r = d.reasoning_content ?? d.reasoning;
+      if (typeof r === 'string' && r) { think.thinking += r; emit({ type: 'thinking', delta: r }); }
+      if (typeof d.content === 'string' && d.content) { text.text += d.content; emit({ type: 'text', delta: d.content }); }
+      (d.annotations || ch?.message?.annotations || []).forEach(a => { const u = a.url_citation; if (u?.url) text.citations.push({ url: u.url, title: u.title || u.url }); });
+      if (ch?.finish_reason) state.stopReason = ch.finish_reason === 'length' ? 'max_tokens' : ch.finish_reason;
+      if (evt.usage) {
+        const cached = evt.usage.prompt_tokens_details?.cached_tokens || 0;
+        state.usage.input_tokens = Math.max(0, (evt.usage.prompt_tokens || 0) - cached);
+        state.usage.cache_read = cached;
+        state.usage.output_tokens = evt.usage.completion_tokens || 0;
+      }
+    }
+  }
+  return state;
+}
+
+// A complete (non-streamed) JSON reply in either format, emitted as if it had streamed.
+async function readJsonReply(response, emit, state = newStreamState()) {
+  const j = await response.json();
+  const think = state.blocks[0] = { type: 'thinking', thinking: '' };
+  const text = state.blocks[1] = { type: 'text', text: '', citations: [] };
+  if (Array.isArray(j.content)) { // Anthropic
+    for (const b of j.content) {
+      if (b.type === 'thinking' && b.thinking) think.thinking += b.thinking;
+      if (b.type === 'text' && b.text) { text.text += b.text; (b.citations || []).forEach(c => c.url && text.citations.push({ url: c.url, title: c.title || c.url })); }
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) b.content.forEach(r => r.url && text.citations.push({ url: r.url, title: r.title || r.url }));
+    }
+    const u = j.usage || {};
+    state.usage.input_tokens = u.input_tokens || 0; state.usage.output_tokens = u.output_tokens || 0;
+    state.usage.cache_read = u.cache_read_input_tokens || 0; state.usage.cache_write = u.cache_creation_input_tokens || 0;
+    state.usage.web_searches = u.server_tool_use?.web_search_requests || 0;
+    state.stopReason = j.stop_reason || null;
+  } else if (Array.isArray(j.choices)) { // OpenAI
+    const msg = j.choices[0]?.message || {};
+    think.thinking = msg.reasoning_content || msg.reasoning || '';
+    text.text = typeof msg.content === 'string' ? msg.content : (msg.content || []).map(p => p.text || '').join('');
+    const u = j.usage || {}; const cached = u.prompt_tokens_details?.cached_tokens || 0;
+    state.usage.input_tokens = Math.max(0, (u.prompt_tokens || 0) - cached); state.usage.cache_read = cached; state.usage.output_tokens = u.completion_tokens || 0;
+    const fr = j.choices[0]?.finish_reason; state.stopReason = fr === 'length' ? 'max_tokens' : fr || null;
+  } else {
+    throw new Error('The provider returned a reply in an unknown format.');
+  }
+  if (think.thinking) emit({ type: 'thinking', delta: think.thinking });
+  if (text.citations.length) emit({ type: 'sources', items: text.citations });
+  if (text.text) emit({ type: 'text', delta: text.text });
+  return state;
+}
+
+// Convert stored Anthropic-format messages into OpenAI chat messages.
+function toOpenAIMessages(messages, system) {
+  const out = [];
+  if (system) out.push({ role: 'system', content: system });
+  for (const m of messages) {
+    if (m.role === 'assistant') { out.push({ role: 'assistant', content: m.content.map(b => b.text || '').join('') }); continue; }
+    const parts = m.content.map(b => {
+      if (b.type === 'text') return { type: 'text', text: b.text };
+      if (b.type === 'image') return { type: 'image_url', image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` } };
+      if (b.type === 'document') return { type: 'file', file: { filename: 'document.pdf', file_data: `data:application/pdf;base64,${b.source.data}` } };
+      return null;
+    }).filter(Boolean);
+    out.push({ role: 'user', content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts });
+  }
+  return out;
+}
+
 // Turn working blocks into what we store and show.
 function finalizeBlocks(blocks) {
   const out = [];
@@ -217,4 +334,4 @@ function finalizeBlocks(blocks) {
   return out;
 }
 
-module.exports = { authHeaders, openStream, readStream, finalizeBlocks, newStreamState };
+module.exports = { authHeaders, endpointFor, readJsonReply, readOpenAIStream, toOpenAIMessages, openStream, readStream, finalizeBlocks, newStreamState };

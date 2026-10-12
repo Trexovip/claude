@@ -220,38 +220,79 @@ function keyForm(k) {
 // ---------- models ----------
 async function models() {
   A.models = (await api('/api/admin/models')).models;
-  page.innerHTML = head('Models', 'Model IDs must match what your endpoint accepts. Check Tokenhot\'s model list and set prices to their rates so cost tracking is accurate.',
-    `<button class="btn primary" id="addModel">${icon('plus')} Add model</button>`) + `
+  page.innerHTML = head('Models', 'Use "Load models from provider" to get the exact IDs your key can use. Claude models use the Anthropic format; GPT and others use OpenAI chat format. Set prices so cost tracking is accurate.',
+    `<div class="row"><button class="btn" id="loadRemote">${icon('download')} Load models from provider</button><button class="btn primary" id="addModel">${icon('plus')} Add model</button></div>`) + `
   <div class="panel"><div class="table-wrap"><table class="data">
-    <thead><tr><th>Display name</th><th>Model ID</th><th class="num">Input $/M</th><th class="num">Output $/M</th><th class="num">Max tokens</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Display name</th><th>Model ID</th><th>API format</th><th class="num">Input $/M</th><th class="num">Output $/M</th><th class="num">Max tokens</th><th>Status</th><th></th></tr></thead>
     <tbody>${A.models.map(m => `<tr class="click" data-id="${esc(m.id)}"><td>${esc(m.label)}</td><td class="mono" style="font-size:13px">${esc(m.id)}</td>
+      <td>${m.api_format === 'openai' ? '<span class="tag">OpenAI chat</span>' : '<span class="tag accent">Anthropic</span>'}</td>
       <td class="num">$${m.input_price}</td><td class="num">$${m.output_price}</td><td class="num">${fmt.num(m.max_tokens)}</td>
       <td>${m.enabled ? '<span class="tag ok">enabled</span>' : '<span class="tag">disabled</span>'}</td><td class="actions"><button class="btn sm">Edit</button></td></tr>`).join('')
-      || '<tr><td colspan="7" class="empty-row">No models. Add one so staff can chat.</td></tr>'}</tbody>
+      || '<tr><td colspan="8" class="empty-row">No models. Add one so staff can chat.</td></tr>'}</tbody>
   </table></div></div>
   <p class="muted" style="font-size:13px">The starting prices are placeholders. Edit each model to match what you actually pay.</p>`;
   $('#addModel').onclick = () => modelForm(null);
+  $('#loadRemote').onclick = remoteModels;
   $$('tr.click').forEach(tr => tr.onclick = () => modelForm(A.models.find(m => m.id === tr.dataset.id)));
+}
+
+async function remoteModels() {
+  let r;
+  try { r = await api('/api/admin/models/remote'); } catch (e) { return toast(e.message, 'error'); }
+  const claude = r.models.filter(m => m.claude), other = r.models.filter(m => !m.claude);
+  const row = (m) => `<label class="check" style="padding:4px 0"><input type="checkbox" class="rm" value="${esc(m.id)}" ${m.added ? 'disabled checked' : ''}>
+    <span class="mono" style="font-size:13px">${esc(m.id)}</span> <span class="tag">${m.format === 'openai' ? 'OpenAI chat' : 'Anthropic'}</span>${m.added ? ' <span class="tag">already added</span>' : ''}</label>`;
+  openModal(`<h2>Models your key can use</h2><p class="sub">From <span class="mono">${esc(r.url)}</span>. Tick the ones to add, then set their prices in the list.</p>
+    ${claude.length ? `<div class="section-title" style="border:0;padding:0;margin-top:0">Claude models</div>${claude.map(row).join('')}` : '<p class="muted">No Claude models were listed.</p>'}
+    ${other.length ? `<div class="section-title">Other models (GPT, Gemini, DeepSeek and more)</div>${other.map(row).join('')}` : ''}
+    <div class="section-title">Models in your list that the provider doesn't offer</div>
+    <div id="stale"></div>
+    <div class="modal-actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="rmAdd">Add selected</button></div>`, {
+    wide: true,
+    onMount: (el, close) => {
+      const offered = new Set(r.models.map(m => m.id));
+      const stale = A.models.filter(m => !offered.has(m.id));
+      $('#stale', el).innerHTML = stale.length
+        ? stale.map(m => `<div class="row" style="padding:4px 0"><span class="mono" style="font-size:13px;flex:1">${esc(m.id)}</span>${m.enabled ? `<button class="btn sm" data-off="${esc(m.id)}">Disable</button>` : '<span class="tag">disabled</span>'}</div>`).join('')
+        : '<div class="muted" style="font-size:14px">None. Every model in your list is offered.</div>';
+      $$('[data-off]', el).forEach(b => b.onclick = async () => { await api(`/api/admin/models/${encodeURIComponent(b.dataset.off)}`, { method: 'PUT', body: { enabled: false } }); b.replaceWith(Object.assign(document.createElement('span'), { className: 'tag', textContent: 'disabled' })); });
+      $('#rmAdd', el).onclick = async () => {
+        const ids = $$('.rm:checked:not(:disabled)', el).map(c => c.value);
+        for (const id of ids) {
+          const label = id.replace(/^claude-/i, 'Claude ').replace(/^gpt-/i, 'GPT-').replace(/-/g, ' ').replace(/(^|\s)\w/g, c => c.toUpperCase());
+          const f = r.models.find(x => x.id === id)?.format || 'openai';
+          await api('/api/admin/models', { body: { id, label, input_price: 0, output_price: 0, enabled: true, api_format: f } }).catch(() => {});
+        }
+        close(); toast(ids.length ? `Added ${ids.length} model(s). Set their prices so costs are tracked.` : 'Nothing new selected'); models();
+      };
+    },
+  });
 }
 
 function modelForm(m) {
   const isNew = !m;
-  m = m || { enabled: 1, max_tokens: 16000, input_price: 0, output_price: 0 };
+  m = m || { enabled: 1, max_tokens: 16000, input_price: 0, output_price: 0, api_format: '' };
   openModal(`<h2>${isNew ? 'Add model' : 'Edit model'}</h2><p class="sub">Prices are USD per million tokens.</p>
     <div class="grid-2">
       <div class="field"><label for="mi">Model ID</label><input class="input mono" id="mi" value="${esc(m.id || '')}" ${isNew ? 'autofocus' : 'disabled'} placeholder="claude-sonnet-4.6"></div>
       <div class="field"><label for="ml">Display name</label><input class="input" id="ml" value="${esc(m.label || '')}"></div>
       <div class="field"><label for="mip">Input price ($/M)</label><input class="input" id="mip" type="number" step="0.01" min="0" value="${m.input_price}"></div>
       <div class="field"><label for="mop">Output price ($/M)</label><input class="input" id="mop" type="number" step="0.01" min="0" value="${m.output_price}"></div>
+      <div class="field" style="grid-column:1/-1"><label for="maf">API format</label><select class="select" id="maf">
+        <option value="anthropic">Anthropic Messages (/v1/messages): Claude, with thinking and web search</option>
+        <option value="openai">OpenAI Chat Completions (/v1/chat/completions): GPT, Gemini, DeepSeek and others</option></select>
+        <span class="hint">If a Claude model says "no available channel" on Anthropic format, try OpenAI format.</span></div>
       <div class="field"><label for="mmt">Max output tokens</label><input class="input" id="mmt" type="number" step="1000" min="256" value="${m.max_tokens}"></div>
       <div class="field"><label for="ms">Sort order</label><input class="input" id="ms" type="number" value="${m.sort ?? ''}"></div>
     </div>
     <label class="check"><input type="checkbox" id="men" ${m.enabled ? 'checked' : ''}> Enabled for chat</label>
-    <div class="modal-actions">${!isNew ? '<button class="btn danger" id="mDel" style="margin-right:auto">Delete model</button>' : ''}
+    <div class="modal-actions">${!isNew ? '<button class="btn danger" id="mDel" style="margin-right:auto">Delete model</button><button class="btn" id="mTest">Test this model</button>' : ''}
       <button class="btn" data-close>Cancel</button><button class="btn primary" id="mSave">${isNew ? 'Add model' : 'Save changes'}</button></div>`, {
     onMount: (el, close) => {
+      $('#maf', el).value = m.api_format || 'anthropic';
+      if (isNew) $('#mi', el).oninput = () => { $('#maf', el).value = /claude/i.test($('#mi', el).value) ? 'anthropic' : 'openai'; };
       $('#mSave', el).onclick = async () => {
-        const body = { id: $('#mi', el).value, label: $('#ml', el).value, input_price: Number($('#mip', el).value), output_price: Number($('#mop', el).value),
+        const body = { api_format: $('#maf', el).value, id: $('#mi', el).value, label: $('#ml', el).value, input_price: Number($('#mip', el).value), output_price: Number($('#mop', el).value),
           max_tokens: Number($('#mmt', el).value), enabled: $('#men', el).checked };
         if ($('#ms', el).value !== '') body.sort = Number($('#ms', el).value);
         try {
@@ -259,6 +300,18 @@ function modelForm(m) {
           close(); toast('Model saved'); models();
         } catch (e) { toast(e.message, 'error'); }
       };
+      $('#mTest', el) && ($('#mTest', el).onclick = async (ev) => {
+        const b = ev.currentTarget; b.disabled = true; b.textContent = 'Testing…';
+        try {
+          // Save the format first so the test uses what's selected.
+          await api(`/api/admin/models/${encodeURIComponent(m.id)}`, { method: 'PUT', body: { api_format: $('#maf', el).value } });
+          const keys = (await api('/api/admin/keys')).keys.filter(k => k.enabled);
+          if (!keys.length) throw new Error('Add an API key first.');
+          const t = await api(`/api/admin/keys/${keys[0].id}/test`, { body: { model: m.id } });
+          toast(t.message, t.ok ? '' : 'error');
+        } catch (e) { toast(e.message, 'error'); }
+        b.disabled = false; b.textContent = 'Test this model';
+      });
       $('#mDel', el) && ($('#mDel', el).onclick = async () => {
         if (!await confirmBox(`Delete ${m.id}?`, 'Staff will no longer see it. Past usage stays in reports.')) return;
         await api(`/api/admin/models/${encodeURIComponent(m.id)}`, { method: 'DELETE' }); close(); models();
@@ -352,13 +405,15 @@ async function settings() {
   page.innerHTML = head('Settings', 'Workspace-wide options.') + `
   <div class="panel"><div class="panel-head"><h2>API connection</h2></div><div class="panel-body">
     <div class="field"><label for="se">Default endpoint</label><input class="input mono" id="se" value="${esc(s.default_endpoint)}">
-      <span class="hint">Keys without their own endpoint use this. Official Anthropic: https://api.anthropic.com/v1/messages</span></div>
+      <span class="hint">For Anthropic-format models. Keys without their own endpoint use this. Official Anthropic: https://api.anthropic.com/v1/messages</span></div>
+    <div class="field"><label for="so">OpenAI-format endpoint</label><input class="input mono" id="so" value="${esc(s.openai_endpoint || '')}">
+      <span class="hint">For models set to OpenAI Chat Completions. Always sent with Authorization: Bearer.</span></div>
     <div class="grid-2">
-      <div class="field"><label for="sa">How keys are sent</label><select class="select" id="sa">
+      <div class="field"><label for="sa">How keys are sent (Anthropic format)</label><select class="select" id="sa">
         <option value="both">Both headers (works with most gateways)</option>
         <option value="x-api-key">x-api-key only (Tokenhot docs style)</option>
         <option value="bearer">Authorization: Bearer only</option></select></div>
-      <div class="field"><label for="sv">anthropic-version header</label><input class="input mono" id="sv" value="${esc(s.anthropic_version)}"></div>
+      <div class="field"><label for="sv">anthropic-version header</label><input class="input mono" id="sv" value="${esc(s.anthropic_version)}"><span class="hint">Leave blank to not send it.</span></div>
     </div>
     <div class="field"><label for="sc">Key cooldown after an error (seconds)</label><input class="input" id="sc" type="number" min="15" value="${esc(s.key_cooldown_seconds)}" style="max-width:200px"></div>
     <div class="field"><label for="sw">Web search price per 1,000 searches ($)</label><input class="input" id="sw" type="number" step="0.5" min="0" value="${esc(s.web_search_price_per_1000)}" style="max-width:200px"></div>
@@ -372,7 +427,7 @@ async function settings() {
   $('#sSave').onclick = async () => {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: {
-        default_endpoint: $('#se').value.trim(), anthropic_version: $('#sv').value.trim(), auth_header: $('#sa').value, key_cooldown_seconds: $('#sc').value,
+        default_endpoint: $('#se').value.trim(), openai_endpoint: $('#so').value.trim(), anthropic_version: $('#sv').value.trim(), auth_header: $('#sa').value, key_cooldown_seconds: $('#sc').value,
         web_search_price_per_1000: $('#sw').value, staff_notice: $('#sn').value, default_system_prompt: $('#ss').value } });
       toast('Settings saved');
     } catch (e) { toast(e.message, 'error'); }

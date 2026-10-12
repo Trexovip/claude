@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS templates (
 // Default settings and models (prices are placeholders: edit them in Admin > Models).
 const defaults = {
   default_endpoint: 'https://api.tokenhot.ai/v1/messages',
+  openai_endpoint: 'https://api.tokenhot.ai/v1/chat/completions',
   anthropic_version: '2023-06-01',
   auth_header: 'both', // 'x-api-key' | 'bearer' | 'both'
   key_cooldown_seconds: '300',
@@ -113,6 +114,10 @@ const defaults = {
   staff_notice: 'Chats on this workspace are visible to administrators.',
   default_system_prompt: '',
 };
+// Migration: per-model API format ('anthropic' = /v1/messages, 'openai' = /v1/chat/completions).
+if (!db.prepare("PRAGMA table_info(models)").all().some(c => c.name === 'api_format'))
+  db.exec("ALTER TABLE models ADD COLUMN api_format TEXT NOT NULL DEFAULT 'anthropic'");
+
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) insSetting.run(k, v);
 
@@ -125,6 +130,7 @@ if (modelCount === 0) {
   ins.run('claude-sonnet-5.5', 'Claude Sonnet 5.5', 3, 15, 32000, 1, 3);
   ins.run('claude-haiku-5.5', 'Claude Haiku 5.5', 1, 5, 16000, 1, 4);
   ins.run('claude-fable-5.1', 'Claude Fable 5.1', 15, 75, 32000, 0, 5);
+  db.prepare("INSERT INTO models (id,label,input_price,output_price,max_tokens,enabled,sort,api_format) VALUES ('gpt-4o','GPT-4o',2.5,10,16000,1,6,'openai')").run();
 }
 
 function getSetting(key) {

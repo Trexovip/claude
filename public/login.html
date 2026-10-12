@@ -35,18 +35,44 @@
       <div class="form-error" id="sErr"></div>
       <button class="btn primary" style="width:100%;height:40px" type="submit">Create admin account</button>
     </form>
+
+    <div id="diag" class="hidden">
+      <h1>Admin account not created yet</h1>
+      <p>The server checked its variables when it started. Here's what it found:</p>
+      <div class="panel" style="margin-bottom:16px"><div class="panel-body" id="diagList" style="font-size:14px;line-height:2"></div></div>
+      <div id="diagFix" style="font-size:14px;color:var(--muted)"></div>
+    </div>
   </div>
 </div>
 <script src="/js/common.js"></script>
 <script>
 (async () => {
   const s = await api('/api/setup-status');
+  if (s.needsSetup && s.env?.railway && !s.env.SETUP_TOKEN) return showDiag(s);
   if (s.needsSetup) { $('#setupForm').classList.remove('hidden'); $('#su').focus(); if (s.tokenRequired) $('#tokWrap').classList.remove('hidden'); }
   else {
     $('#loginForm').classList.remove('hidden'); $('#lu').focus();
     if (s.notice) { $('#notice').textContent = s.notice; $('#notice').classList.remove('hidden'); }
   }
 })();
+
+function showDiag(s) {
+  const e = s.env;
+  const row = (ok, text) => `<div><span style="color:${ok ? 'var(--ok)' : 'var(--danger)'};font-family:var(--mono)">${ok ? '✓' : '✗'}</span> ${text}</div>`;
+  $('#diagList').innerHTML =
+    row(e.ADMIN_USERNAME && e.usernameValid, 'ADMIN_USERNAME' + (e.ADMIN_USERNAME ? (e.usernameValid ? '' : ' (has spaces or invalid characters)') : ' (missing)')) +
+    row(e.ADMIN_PASSWORD && e.passwordLongEnough, 'ADMIN_PASSWORD' + (e.ADMIN_PASSWORD ? (e.passwordLongEnough ? '' : ' (shorter than 10 characters)') : ' (missing)')) +
+    row(e.APP_SECRET, 'APP_SECRET' + (e.APP_SECRET ? '' : ' (missing)')) +
+    row(!!e.volume, e.volume ? `Volume mounted at ${esc(e.volume)}` : 'Volume (not attached)') +
+    `<div class="muted" style="margin-top:6px">Service: ${esc(e.service || 'unknown')} · Environment: ${esc(e.environment || 'unknown')}</div>` +
+    (e.adminLikeVars.length ? `<div class="muted">Related variable names seen: <span class="mono">${e.adminLikeVars.map(esc).join(', ')}</span></div>` : '');
+  let fix;
+  if (s.problem) fix = esc(s.problem) + ' Fix it in the service’s Variables tab, then click Deploy.';
+  else if (!e.ADMIN_USERNAME && !e.ADMIN_PASSWORD) fix = `None of the admin variables reached this service. In Railway, open the service named <b>${esc(e.service || 'this one')}</b>, go to its <b>Variables</b> tab (not Project Settings), add them there, then click the purple <b>Deploy</b> button to apply the staged changes.`;
+  else fix = 'Variables look right. Click Deploy (or Redeploy) once more so the server starts with them.';
+  $('#diagFix').innerHTML = fix;
+  $('#diag').classList.remove('hidden');
+}
 
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault(); $('#lErr').textContent = '';

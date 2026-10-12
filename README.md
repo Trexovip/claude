@@ -57,6 +57,13 @@ Content-Type: application/json
 
 By default both auth headers are sent. In **Admin › Settings › How keys are sent**, you can switch to `x-api-key` only (Tokenhot's documented style) or `Authorization: Bearer` only.
 
+**Two API formats.** Each model in Admin › Models has an API format:
+
+- **Anthropic Messages:** `/v1/messages`, the headers above. Used for Claude, and supports thinking and web search.
+- **OpenAI Chat Completions:** `https://api.tokenhot.ai/v1/chat/completions`, always sent with `Authorization: Bearer <key>`. Used for GPT-4o, Gemini, DeepSeek and other models. Images and PDFs are converted automatically. Reasoning text is shown when the provider streams it. Web search and the thinking budget don't apply.
+
+**Load models from provider** (in Admin › Models) lists every model your key can use and picks the format for each one. If a Claude model returns "no available channel" on the Anthropic format, switch it to OpenAI format and try again.
+
 Tokenhot uses **dotted model IDs** such as `claude-sonnet-4.6`. The app starts with `claude-sonnet-4.6` plus dotted guesses for the newer models. Check Tokenhot's model list and fix or remove any IDs it doesn't accept in Admin › Models.
 
 Keys are encrypted (AES-256-GCM) in the database and never reach the browser, so staff can't see or copy them. You can change the default endpoint in Settings, or give one key its own endpoint. For example, you can point an official Anthropic key at `https://api.anthropic.com/v1/messages` and mix it with Tokenhot keys.

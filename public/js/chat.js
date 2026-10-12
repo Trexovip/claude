@@ -67,22 +67,24 @@ function buildModelSelect() {
   if (!S.models.length) { sel.innerHTML = '<option>No models available</option>'; sel.disabled = true; return; }
   sel.innerHTML = S.models.map(m => `<option value="${esc(m.id)}">${esc(m.label)}</option>`).join('');
   sel.value = S.models.some(m => m.id === S.prefs.model) ? S.prefs.model : S.models[0].id;
-  sel.onchange = () => { S.prefs.model = sel.value; savePrefs(); renderStatus(); };
+  sel.onchange = () => { S.prefs.model = sel.value; savePrefs(); applyToggles(); renderStatus(); };
 }
 const currentModel = () => S.models.find(m => m.id === $('#modelSelect').value);
 
 function applyToggles() {
-  const canThink = S.me.role === 'admin' || S.me.allow_thinking;
-  const canSearch = S.me.role === 'admin' || S.me.allow_web_search;
+  const anthropic = (currentModel()?.api_format || 'anthropic') === 'anthropic';
+  const canThink = (S.me.role === 'admin' || S.me.allow_thinking) && anthropic;
+  const canSearch = (S.me.role === 'admin' || S.me.allow_web_search) && anthropic;
   $('#thinkBtn').classList.toggle('hidden', !canThink);
   $('#searchBtn').classList.toggle('hidden', !canSearch);
-  if (!canThink) S.prefs.thinking = false;
-  if (!canSearch) S.prefs.webSearch = false;
+  $('.composer-bar .sep').classList.toggle('hidden', !canThink && !canSearch);
+  if (!canThink && (S.me.role !== 'admin' && !S.me.allow_thinking)) S.prefs.thinking = false;
+  if (!canSearch && (S.me.role !== 'admin' && !S.me.allow_web_search)) S.prefs.webSearch = false;
   $('#thinkBtn').classList.toggle('on', !!S.prefs.thinking);
   $('#thinkBtn').setAttribute('aria-pressed', !!S.prefs.thinking);
   $('#searchBtn').classList.toggle('on', !!S.prefs.webSearch);
   $('#searchBtn').setAttribute('aria-pressed', !!S.prefs.webSearch);
-  $('#budgetWrap').classList.toggle('show', !!S.prefs.thinking);
+  $('#budgetWrap').classList.toggle('show', !!S.prefs.thinking && canThink);
   $('#budget').value = S.prefs.budget || 8192;
   $('#budgetVal').textContent = Math.round($('#budget').value / 1024) + 'k';
 }
@@ -161,7 +163,7 @@ async function openChat(id) {
   if (S.streaming) stopStream();
   const r = await api(`/api/chats/${id}`);
   S.chat = r.chat; S.messages = r.messages;
-  if (r.chat.model && S.models.some(m => m.id === r.chat.model)) $('#modelSelect').value = r.chat.model;
+  if (r.chat.model && S.models.some(m => m.id === r.chat.model)) { $('#modelSelect').value = r.chat.model; applyToggles(); }
   history.replaceState(null, '', `/chat#${id}`);
   $('#chatTitle').textContent = r.chat.title;
   closeArtifact();
@@ -257,7 +259,7 @@ function renderStatus() {
   $('#chatCost').textContent = total ? fmt.costFine(total) : '';
   const parts = [];
   if (S.activeKey) parts.push(`<span class="key-on">key: ${esc(S.activeKey)}</span>`);
-  if (m) parts.push(`<span>${esc(m.id)} · $${m.input_price}/$${m.output_price} per M tokens</span>`);
+  if (m) parts.push(`<span>${esc(m.id)}${m.api_format === 'openai' ? ' (OpenAI format)' : ''} · $${m.input_price}/$${m.output_price} per M tokens</span>`);
   const sys = S.chat ? S.chat.system_prompt : S.draftSystem;
   if (sys?.trim()) parts.push('<span>system prompt on</span>');
   $('#statusLine').innerHTML = parts.join('');
@@ -383,7 +385,7 @@ async function runStream(opts) {
   try {
     const res = await fetch(`/api/chats/${S.chat.id}/send`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', signal: S.abort.signal,
-      body: JSON.stringify({ ...opts, model: currentModel().id, thinking: !!S.prefs.thinking, thinkingBudget: S.prefs.budget || 8192, webSearch: !!S.prefs.webSearch }),
+      body: JSON.stringify({ ...opts, model: currentModel().id, ...(currentModel().api_format === 'openai' ? {} : { thinking: !!S.prefs.thinking, thinkingBudget: S.prefs.budget || 8192, webSearch: !!S.prefs.webSearch }) }),
     });
     if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || `Request failed (${res.status})`); }
     const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
