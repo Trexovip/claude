@@ -171,7 +171,7 @@ async function keys() {
   $$('[data-test]').forEach(b => b.onclick = async () => {
     b.disabled = true; b.textContent = 'Testing…';
     const t = await api(`/api/admin/keys/${b.dataset.test}/test`, { body: {} }).catch(e => ({ ok: false, message: e.message }));
-    toast(t.message, t.ok ? '' : 'error'); keys();
+    showTestResult(t, r.keys.find(k => k.id === Number(b.dataset.test))?.label || ''); keys();
   });
   // drag to reorder
   let dragId = null;
@@ -286,13 +286,15 @@ function modelForm(m) {
       <div class="field"><label for="ms">Sort order</label><input class="input" id="ms" type="number" value="${m.sort ?? ''}"></div>
     </div>
     <label class="check"><input type="checkbox" id="men" ${m.enabled ? 'checked' : ''}> Enabled for chat</label>
+    <label class="check" style="margin-top:8px"><input type="checkbox" id="mst" ${m.stream !== 0 ? 'checked' : ''}> Stream replies word by word
+      <span class="hint" style="margin-left:4px">(turn off to send exactly like Tokenhot's curl example)</span></label>
     <div class="modal-actions">${!isNew ? '<button class="btn danger" id="mDel" style="margin-right:auto">Delete model</button><button class="btn" id="mTest">Test this model</button>' : ''}
       <button class="btn" data-close>Cancel</button><button class="btn primary" id="mSave">${isNew ? 'Add model' : 'Save changes'}</button></div>`, {
     onMount: (el, close) => {
       $('#maf', el).value = m.api_format || 'anthropic';
       if (isNew) $('#mi', el).oninput = () => { $('#maf', el).value = /claude/i.test($('#mi', el).value) ? 'anthropic' : 'openai'; };
       $('#mSave', el).onclick = async () => {
-        const body = { api_format: $('#maf', el).value, id: $('#mi', el).value, label: $('#ml', el).value, input_price: Number($('#mip', el).value), output_price: Number($('#mop', el).value),
+        const body = { stream: $('#mst', el).checked, api_format: $('#maf', el).value, id: $('#mi', el).value, label: $('#ml', el).value, input_price: Number($('#mip', el).value), output_price: Number($('#mop', el).value),
           max_tokens: Number($('#mmt', el).value), enabled: $('#men', el).checked };
         if ($('#ms', el).value !== '') body.sort = Number($('#ms', el).value);
         try {
@@ -304,11 +306,11 @@ function modelForm(m) {
         const b = ev.currentTarget; b.disabled = true; b.textContent = 'Testing…';
         try {
           // Save the format first so the test uses what's selected.
-          await api(`/api/admin/models/${encodeURIComponent(m.id)}`, { method: 'PUT', body: { api_format: $('#maf', el).value } });
+          await api(`/api/admin/models/${encodeURIComponent(m.id)}`, { method: 'PUT', body: { api_format: $('#maf', el).value, stream: $('#mst', el).checked } });
           const keys = (await api('/api/admin/keys')).keys.filter(k => k.enabled);
           if (!keys.length) throw new Error('Add an API key first.');
           const t = await api(`/api/admin/keys/${keys[0].id}/test`, { body: { model: m.id } });
-          toast(t.message, t.ok ? '' : 'error');
+          showTestResult(t, keys[0].label);
         } catch (e) { toast(e.message, 'error'); }
         b.disabled = false; b.textContent = 'Test this model';
       });
@@ -318,6 +320,16 @@ function modelForm(m) {
       });
     },
   });
+}
+
+function showTestResult(t, keyLabel) {
+  openModal(`<h2>${t.ok ? 'Test passed' : 'Test failed'}</h2><p class="sub">${esc(t.message)}</p>
+    ${t.reply ? `<div class="section-title" style="border:0;padding:0;margin-top:0">Reply</div><div class="md" style="font-size:14px;margin-bottom:14px">${esc(t.reply)}</div>` : ''}
+    <div class="section-title" style="border:0;padding:0;margin-top:0">Exact request sent (key "${esc(keyLabel)}", hidden)</div>
+    <pre class="mono" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;overflow:auto;white-space:pre">${esc(t.sent || '')}</pre>
+    <div class="section-title">Raw response</div>
+    <pre class="mono" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;overflow:auto;max-height:220px;white-space:pre-wrap">${esc(t.response || '')}</pre>
+    <div class="modal-actions"><button class="btn" data-copy="${encodeURIComponent(t.sent || '')}">Copy request</button><button class="btn primary" data-close>Close</button></div>`, { wide: true });
 }
 
 // ---------- reports ----------
@@ -413,7 +425,7 @@ async function settings() {
         <option value="bearer">Authorization: Bearer only (Tokenhot docs)</option>
         <option value="x-api-key">x-api-key only</option>
         <option value="both">Both headers</option></select></div>
-      <div class="field"><label for="sv">anthropic-version header</label><input class="input mono" id="sv" value="${esc(s.anthropic_version)}"><span class="hint">Leave blank to not send it.</span></div>
+      <div class="field"><label for="sv">anthropic-version header</label><input class="input mono" id="sv" value="${esc(s.anthropic_version)}"><span class="hint">Blank (default) = not sent, matching Tokenhot's curl example.</span></div>
     </div>
     <div class="field"><label for="sc">Key cooldown after an error (seconds)</label><input class="input" id="sc" type="number" min="15" value="${esc(s.key_cooldown_seconds)}" style="max-width:200px"></div>
     <div class="field"><label for="sw">Web search price per 1,000 searches ($)</label><input class="input" id="sw" type="number" step="0.5" min="0" value="${esc(s.web_search_price_per_1000)}" style="max-width:200px"></div>

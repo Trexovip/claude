@@ -209,6 +209,8 @@ function buildApiMessages(chatId) {
     else msgs.push({ role: r.role, content });
   }
   while (msgs.length && msgs[0].role !== 'user') msgs.shift();
+  // Text-only turns as plain strings, exactly like the provider's curl example.
+  for (const m of msgs) if (m.content.every(b => b.type === 'text')) m.content = m.content.map(b => b.text).join('\n\n');
   return msgs;
 }
 
@@ -399,7 +401,7 @@ app.post('/api/chats/:id/send', sec.requireUser, async (req, res) => {
   let key = null, stopped = false, errorMsg = null, started = false;
   const state = newStreamState();
   try {
-    const opened = await openStream(payload, controller.signal, (label) => emit({ type: 'key', label, switched: true }), isOpenAI ? 'openai' : 'anthropic');
+    const opened = await openStream(payload, controller.signal, (label) => emit({ type: 'key', label, switched: true }), isOpenAI ? 'openai' : 'anthropic', !!model.stream);
     key = opened.key; started = true;
     emit({ type: 'key', label: key.label });
     if (isOpenAI && (wantSearch || wantThinking)) emit({ type: 'notice', message: 'Web search and the thinking budget only apply to Claude models on the Anthropic format.' });
@@ -580,18 +582,20 @@ admin.post('/keys/:id/test', async (req, res) => {
   try {
     const secret = sec.decrypt(k.key_enc);
     const isOpenAI = model.api_format === 'openai';
-    const r = await fetch(endpointFor(k, isOpenAI ? 'openai' : 'anthropic'), {
-      method: 'POST',
-      headers: isOpenAI ? { 'content-type': 'application/json', authorization: `Bearer ${secret}` }
-                        : { 'content-type': 'application/json', ...authHeaders(secret, endpointFor(k, 'anthropic')) },
-      body: JSON.stringify({ model: model.id, max_tokens: 8, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
-      signal: AbortSignal.timeout(30000),
-    });
+    const url = endpointFor(k, isOpenAI ? 'openai' : 'anthropic');
+    const headers = isOpenAI ? { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }
+                             : { ...authHeaders(secret, url), 'content-type': 'application/json' };
+    // Same body as the provider's curl example.
+    const reqBody = { model: model.id, messages: [{ role: 'user', content: 'What can you do?' }], max_tokens: 500 };
+    var sent = `curl --location '${url}' \\\n` + Object.entries(headers).map(([h, v]) => `--header '${h}: ${/^(authorization|x-api-key)$/i.test(h) ? v.replace(secret, `<key ${k.key_hint}>`) : v}' \\`).join('\n')
+      + `\n--data '${JSON.stringify(reqBody, null, 4)}'`;
+    const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(reqBody), signal: AbortSignal.timeout(60000) });
     const text = await r.text();
-    if (!r.ok) return res.json({ ok: false, message: `HTTP ${r.status} ${text.slice(0, 300)}` });
+    if (!r.ok) return res.json({ ok: false, message: `HTTP ${r.status} ${text.slice(0, 300)}`, sent, response: text.slice(0, 2000) });
     db.prepare('UPDATE api_keys SET cooldown_until = 0, last_error = NULL WHERE id = ?').run(k.id);
-    res.json({ ok: true, message: `Works. Model ${model.id} answered.` });
-  } catch (e) { res.json({ ok: false, message: e.message }); }
+    const reply = (J(text, {}).content || []).filter(b => b.type === 'text').map(b => b.text).join('') || J(text, {}).choices?.[0]?.message?.content || '';
+    res.json({ ok: true, message: `Works. Model ${model.id} answered.`, sent, response: text.slice(0, 2000), reply });
+  } catch (e) { res.json({ ok: false, message: e.message, sent: typeof sent === 'string' ? sent : '' }); }
 });
 admin.delete('/keys/:id', (req, res) => {
   db.prepare('DELETE FROM api_keys WHERE id = ?').run(Number(req.params.id));
@@ -614,9 +618,10 @@ admin.put('/models/:id', (req, res) => {
   const m = db.prepare('SELECT * FROM models WHERE id = ?').get(req.params.id);
   if (!m) return bad(res, 'Model not found.', 404);
   const b = req.body || {};
-  db.prepare('UPDATE models SET label = ?, input_price = ?, output_price = ?, max_tokens = ?, enabled = ?, sort = ?, api_format = ? WHERE id = ?')
+  db.prepare('UPDATE models SET label = ?, input_price = ?, output_price = ?, max_tokens = ?, enabled = ?, sort = ?, api_format = ?, stream = ? WHERE id = ?')
     .run(b.label?.trim() || m.label, b.input_price ?? m.input_price, b.output_price ?? m.output_price, b.max_tokens ?? m.max_tokens,
-      b.enabled === undefined ? m.enabled : (b.enabled ? 1 : 0), b.sort ?? m.sort, ['anthropic', 'openai'].includes(b.api_format) ? b.api_format : m.api_format, m.id);
+      b.enabled === undefined ? m.enabled : (b.enabled ? 1 : 0), b.sort ?? m.sort, ['anthropic', 'openai'].includes(b.api_format) ? b.api_format : m.api_format,
+      b.stream === undefined ? m.stream : (b.stream ? 1 : 0), m.id);
   res.json({ ok: true });
 });
 // Ask the provider which models this key can use (Tokenhot is OpenAI-compatible: GET /v1/models).

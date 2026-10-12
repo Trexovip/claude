@@ -79,6 +79,10 @@ Everything lives in the `data/` folder:
 
 Alternatively, set the environment variable `APP_SECRET` to a long random string and the server uses that instead of `secret.key`.
 
+## Model
+
+The app ships with one model: **Claude Fable 5.1** (`claude-fable-5.1` on Tokenhot). It's sent exactly like Tokenhot's documented curl: `Authorization: Bearer`, `Content-Type: application/json`, and a `model`, `messages` and `max_tokens` body, without streaming. Upgrading an older install removes the other models; past usage stays in reports. You can still add models later in Admin › Models.
+
 ## Default API key
 
 A Tokenhot key is built into `server.js` (`BUILT_IN_KEY`). On first start it's added to **Admin › API keys** as "Default (Tokenhot)", at the top of the list, with the Tokenhot endpoint. You can edit, replace, disable or delete it there. Once you delete it, it isn't added again.
@@ -98,6 +102,17 @@ The project includes a `Dockerfile` and `railway.json`, so Railway builds it wit
 4. Under Settings › Networking, click **Generate Domain**, then open the URL and sign in.
 
 Keep the service at **1 replica**, since SQLite doesn't support several copies writing at once. The browser setup page is disabled on Railway for safety; the admin account comes from the variables above. If you prefer the setup page, set `SETUP_TOKEN` instead and enter it on the page.
+
+## Testing your live app
+
+From your own computer, in the project folder (Node 18+ is enough, no install needed):
+
+```bash
+node scripts/smoke-test.js https://your-app.up.railway.app admin 'your-password'
+node scripts/smoke-test.js https://your-app.up.railway.app admin 'your-password' claude-fable-5.1   # one model only
+```
+
+It signs in and checks your API keys. Then it sends a sample chat to every enabled model and tests chat history, thinking and web search. It reports time, tokens, cost and errors for each model, and deletes its test chat afterwards. Each run uses a few real requests, which costs a fraction of a cent on most models.
 
 ## Letting staff connect from other computers
 

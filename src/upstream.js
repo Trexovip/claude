@@ -22,7 +22,7 @@ const isAnthropicOfficial = (url) => { try { return new URL(url).hostname.endsWi
 
 // Auth + version headers for an Anthropic-format request to `url`.
 function authHeaders(secret, url = '') {
-  const version = (getSetting('anthropic_version') ?? '2023-06-01').trim();
+  const version = (getSetting('anthropic_version') ?? '').trim();
   if (isAnthropicOfficial(url)) return { 'x-api-key': secret, 'anthropic-version': version || '2023-06-01' };
   const mode = getSetting('auth_header') || 'bearer';
   const h = {};
@@ -60,7 +60,7 @@ function endpointFor(key, format) {
   return key.endpoint || getSetting('default_endpoint');
 }
 
-async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
+async function openStream(payload, signal, onKeySwitch, format = 'anthropic', stream = true) {
   const keys = usableKeys();
   if (keys.length === 0) {
     const any = db.prepare('SELECT COUNT(*) AS n FROM api_keys WHERE enabled = 1').get().n;
@@ -80,11 +80,12 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
     if (i > 0 && onKeySwitch) onKeySwitch(key.label);
     let res, headers, body;
     try {
+      // Only Authorization (+ version if configured) and Content-Type, like the provider's curl examples.
       headers = format === 'openai'
-        ? { 'content-type': 'application/json', authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
-        : { 'content-type': 'application/json', ...authHeaders(secret, endpointFor(key, format)), accept: 'text/event-stream' };
-      body = format === 'openai'
-        ? { ...payload, stream: true, stream_options: { include_usage: true } }
+        ? { authorization: `Bearer ${secret}`, 'content-type': 'application/json' }
+        : { ...authHeaders(secret, endpointFor(key, format)), 'content-type': 'application/json' };
+      body = !stream ? { ...payload }
+        : format === 'openai' ? { ...payload, stream: true, stream_options: { include_usage: true } }
         : { ...payload, stream: true };
       res = await fetch(endpointFor(key, format), {
         method: 'POST',
@@ -104,7 +105,7 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
     if (res.ok) {
       db.prepare('UPDATE api_keys SET last_used_at = ?, request_count = request_count + 1, last_error = NULL WHERE id = ?')
         .run(Date.now(), key.id);
-      return { response: res, key };
+      return { response: res, key, nonStream: !stream };
     }
 
     const text = await res.text().catch(() => '');
@@ -119,9 +120,9 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
       continue;
     }
     // Some gateway channels only serve non-streaming requests: retry once without streaming.
-    if (isModelProblem(text)) {
+    if (isModelProblem(text) && stream) {
       try {
-        const nsHeaders = { ...headers, accept: 'application/json' };
+        const nsHeaders = { ...headers };
         const nsBody = { ...body }; delete nsBody.stream; delete nsBody.stream_options;
         const r2 = await fetch(endpointFor(key, format), { method: 'POST', headers: nsHeaders, body: JSON.stringify(nsBody), signal });
         if (r2.ok) {
@@ -309,6 +310,7 @@ function toOpenAIMessages(messages, system) {
   const out = [];
   if (system) out.push({ role: 'system', content: system });
   for (const m of messages) {
+    if (typeof m.content === 'string') { out.push({ role: m.role, content: m.content }); continue; }
     if (m.role === 'assistant') { out.push({ role: 'assistant', content: m.content.map(b => b.text || '').join('') }); continue; }
     const parts = m.content.map(b => {
       if (b.type === 'text') return { type: 'text', text: b.text };

@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS templates (
 const defaults = {
   default_endpoint: 'https://api.tokenhot.ai/v1/messages',
   openai_endpoint: 'https://api.tokenhot.ai/v1/chat/completions',
-  anthropic_version: '2023-06-01',
+  anthropic_version: '', // blank = not sent (Tokenhot's curl example sends no version header)
   auth_header: 'bearer', // Tokenhot docs: Authorization: Bearer. Options: 'x-api-key' | 'bearer' | 'both'
   key_cooldown_seconds: '300',
   web_search_price_per_1000: '10',
@@ -118,19 +118,38 @@ const defaults = {
 if (!db.prepare("PRAGMA table_info(models)").all().some(c => c.name === 'api_format'))
   db.exec("ALTER TABLE models ADD COLUMN api_format TEXT NOT NULL DEFAULT 'anthropic'");
 
+// Migration: per-model streaming switch (off = send exactly like Tokenhot's curl example).
+if (!db.prepare("PRAGMA table_info(models)").all().some(c => c.name === 'stream'))
+  db.exec("ALTER TABLE models ADD COLUMN stream INTEGER NOT NULL DEFAULT 1");
+
 const insSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) insSetting.run(k, v);
 
 const modelCount = db.prepare('SELECT COUNT(*) AS n FROM models').get().n;
 if (modelCount === 0) {
-  const ins = db.prepare('INSERT INTO models (id,label,input_price,output_price,max_tokens,enabled,sort) VALUES (?,?,?,?,?,?,?)');
-  // Tokenhot uses dotted model IDs (e.g. claude-sonnet-4.6). Check their model list and adjust in Admin > Models.
-  ins.run('claude-sonnet-4.6', 'Claude Sonnet 4.6', 3, 15, 32000, 1, 1);
-  ins.run('claude-opus-5.5', 'Claude Opus 5.5', 5, 25, 32000, 1, 2);
-  ins.run('claude-sonnet-5.5', 'Claude Sonnet 5.5', 3, 15, 32000, 1, 3);
-  ins.run('claude-haiku-5.5', 'Claude Haiku 5.5', 1, 5, 16000, 1, 4);
-  ins.run('claude-fable-5.1', 'Claude Fable 5.1', 15, 75, 32000, 0, 5);
-  db.prepare("INSERT INTO models (id,label,input_price,output_price,max_tokens,enabled,sort,api_format) VALUES ('gpt-4o','GPT-4o',2.5,10,16000,1,6,'openai')").run();
+  // Only Claude Fable 5.1 (Tokenhot model code). Sent exactly like Tokenhot's curl example: no streaming.
+  db.prepare("INSERT INTO models (id,label,input_price,output_price,max_tokens,enabled,sort,api_format,stream) VALUES ('claude-fable-5.1','Claude Fable 5.1',15,75,32000,1,1,'anthropic',0)").run();
+}
+
+// One-time migration: match Tokenhot's documented curl (Bearer only, no version header, Fable non-streaming).
+if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migr_curl_match_v1'").get()) {
+  const ep = db.prepare("SELECT value FROM settings WHERE key = 'default_endpoint'").get()?.value || '';
+  if (/tokenhot/i.test(ep)) {
+    db.prepare("UPDATE settings SET value = 'bearer' WHERE key = 'auth_header'").run();
+    db.prepare("UPDATE settings SET value = '' WHERE key = 'anthropic_version'").run();
+  }
+  db.prepare("UPDATE models SET stream = 0 WHERE id = 'claude-fable-5.1'").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('migr_curl_match_v1', '1')").run();
+}
+
+// One-time migration: keep only Claude Fable 5.1 (usage history is kept in reports).
+if (!db.prepare("SELECT 1 FROM settings WHERE key = 'migr_fable_only_v1'").get()) {
+  db.prepare("DELETE FROM models WHERE id != 'claude-fable-5.1'").run();
+  db.prepare("INSERT OR IGNORE INTO models (id,label,input_price,output_price,max_tokens,enabled,sort,api_format,stream) VALUES ('claude-fable-5.1','Claude Fable 5.1',15,75,32000,1,1,'anthropic',0)").run();
+  db.prepare("UPDATE models SET enabled = 1, api_format = 'anthropic', stream = 0, label = 'Claude Fable 5.1' WHERE id = 'claude-fable-5.1'").run();
+  db.prepare("UPDATE users SET allowed_models = '[]'").run(); // old per-staff model lists pointed at removed models
+  db.prepare("UPDATE chats SET model = 'claude-fable-5.1'").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('migr_fable_only_v1', '1')").run();
 }
 
 function getSetting(key) {
