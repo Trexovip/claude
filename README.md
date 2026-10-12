@@ -49,13 +49,14 @@ On Windows, double-click `start.bat` instead of typing the commands.
 All requests go from the **server** to `https://api.tokenhot.ai/v1/messages`, matching Tokenhot's documented format:
 
 ```
-x-api-key: <your key>
 Authorization: Bearer <your key>
 anthropic-version: 2023-06-01
 Content-Type: application/json
 ```
 
-By default both auth headers are sent. In **Admin › Settings › How keys are sent**, you can switch to `x-api-key` only (Tokenhot's documented style) or `Authorization: Bearer` only.
+Keys are sent as `Authorization: Bearer`, as Tokenhot documents. In **Admin › Settings › How keys are sent** you can switch to `x-api-key` or both headers, and clear the `anthropic-version` field to stop sending that header.
+
+If a streamed request is refused with "no available channel", the app retries once without streaming. If that also fails, your key's Tokenhot **group** doesn't include that model. Create a key in a group that does, or ask Tokenhot support to enable the model.
 
 **Two API formats.** Each model in Admin › Models has an API format:
 

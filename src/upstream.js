@@ -19,7 +19,7 @@ function isKeyProblem(status, bodyText) {
 
 // Builds auth headers per the admin setting. Tokenhot's docs use x-api-key; some gateways want Bearer.
 function authHeaders(secret) {
-  const mode = getSetting('auth_header') || 'both';
+  const mode = getSetting('auth_header') || 'bearer';
   const h = {};
   if (mode === 'x-api-key' || mode === 'both') h['x-api-key'] = secret;
   if (mode === 'bearer' || mode === 'both') h['authorization'] = `Bearer ${secret}`;

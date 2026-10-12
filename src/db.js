@@ -108,7 +108,7 @@ const defaults = {
   default_endpoint: 'https://api.tokenhot.ai/v1/messages',
   openai_endpoint: 'https://api.tokenhot.ai/v1/chat/completions',
   anthropic_version: '2023-06-01',
-  auth_header: 'both', // 'x-api-key' | 'bearer' | 'both'
+  auth_header: 'bearer', // Tokenhot docs: Authorization: Bearer. Options: 'x-api-key' | 'bearer' | 'both'
   key_cooldown_seconds: '300',
   web_search_price_per_1000: '10',
   staff_notice: 'Chats on this workspace are visible to administrators.',

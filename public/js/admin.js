@@ -410,9 +410,9 @@ async function settings() {
       <span class="hint">For models set to OpenAI Chat Completions. Always sent with Authorization: Bearer.</span></div>
     <div class="grid-2">
       <div class="field"><label for="sa">How keys are sent (Anthropic format)</label><select class="select" id="sa">
-        <option value="both">Both headers (works with most gateways)</option>
-        <option value="x-api-key">x-api-key only (Tokenhot docs style)</option>
-        <option value="bearer">Authorization: Bearer only</option></select></div>
+        <option value="bearer">Authorization: Bearer only (Tokenhot docs)</option>
+        <option value="x-api-key">x-api-key only</option>
+        <option value="both">Both headers</option></select></div>
       <div class="field"><label for="sv">anthropic-version header</label><input class="input mono" id="sv" value="${esc(s.anthropic_version)}"><span class="hint">Leave blank to not send it.</span></div>
     </div>
     <div class="field"><label for="sc">Key cooldown after an error (seconds)</label><input class="input" id="sc" type="number" min="15" value="${esc(s.key_cooldown_seconds)}" style="max-width:200px"></div>
@@ -423,7 +423,7 @@ async function settings() {
     <div class="field"><label for="ss">Default system prompt for new chats</label><textarea class="textarea" id="ss" placeholder="Optional. Staff can change it per chat.">${esc(s.default_system_prompt)}</textarea></div>
   </div></div>
   <button class="btn primary" id="sSave">Save settings</button>`;
-  $('#sa').value = s.auth_header || 'both';
+  $('#sa').value = s.auth_header || 'bearer';
   $('#sSave').onclick = async () => {
     try {
       await api('/api/admin/settings', { method: 'PUT', body: {
