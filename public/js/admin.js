@@ -196,7 +196,7 @@ function keyForm(k) {
     <div class="field"><label for="kl">Label</label><input class="input" id="kl" value="${esc(k?.label || '')}" placeholder="e.g. Main account" ${isNew ? 'autofocus' : ''}></div>
     <div class="field"><label for="kk">${isNew ? 'API key' : 'Replace key'}</label><input class="input mono" id="kk" type="password" autocomplete="off" placeholder="${isNew ? 'sk-…' : `Current: ${esc(k.key_hint)}`}"></div>
     <div class="field"><label for="ke">Endpoint for this key <span class="hint">(optional)</span></label><input class="input mono" id="ke" value="${esc(k?.endpoint || '')}" placeholder="Uses the default endpoint from Settings">
-      <span class="hint">Set this to mix providers, e.g. https://api.anthropic.com/v1/messages for an Anthropic key.</span></div>
+      <span class="hint">For an official Anthropic key, enter https://api.anthropic.com/v1/messages. The right headers (x-api-key) are used automatically.</span></div>
     ${!isNew ? `<label class="check"><input type="checkbox" id="ken" ${k.enabled ? 'checked' : ''}> Enabled</label>` : ''}
     <div class="modal-actions">${!isNew ? '<button class="btn danger" id="kDel" style="margin-right:auto">Delete key</button>' : ''}
       <button class="btn" data-close>Cancel</button><button class="btn primary" id="kSave">${isNew ? 'Add key' : 'Save changes'}</button></div>`, {

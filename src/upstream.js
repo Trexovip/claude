@@ -17,12 +17,18 @@ function isKeyProblem(status, bodyText) {
   return false;
 }
 
-// Builds auth headers per the admin setting. Tokenhot's docs use x-api-key; some gateways want Bearer.
-function authHeaders(secret) {
+// The official Anthropic API needs x-api-key + anthropic-version, whatever the gateway setting says.
+const isAnthropicOfficial = (url) => { try { return new URL(url).hostname.endsWith('anthropic.com'); } catch { return false; } };
+
+// Auth + version headers for an Anthropic-format request to `url`.
+function authHeaders(secret, url = '') {
+  const version = (getSetting('anthropic_version') ?? '2023-06-01').trim();
+  if (isAnthropicOfficial(url)) return { 'x-api-key': secret, 'anthropic-version': version || '2023-06-01' };
   const mode = getSetting('auth_header') || 'bearer';
   const h = {};
   if (mode === 'x-api-key' || mode === 'both') h['x-api-key'] = secret;
   if (mode === 'bearer' || mode === 'both') h['authorization'] = `Bearer ${secret}`;
+  if (version) h['anthropic-version'] = version;
   return h;
 }
 
@@ -61,9 +67,9 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
     throw new Error(any ? 'All API keys are cooling down after errors. Try again in a few minutes, or add another key in Admin > API keys.'
                         : 'No API keys are set up. An admin needs to add one in Admin > API keys.');
   }
-  const version = (getSetting('anthropic_version') ?? '2023-06-01').trim(); // blank = header not sent
   const cooldownMs = Number(getSetting('key_cooldown_seconds') || 300) * 1000;
   const errors = [];
+  const modelErrors = [];
 
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
@@ -76,7 +82,7 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
     try {
       headers = format === 'openai'
         ? { 'content-type': 'application/json', authorization: `Bearer ${secret}`, accept: 'text/event-stream' }
-        : { 'content-type': 'application/json', ...authHeaders(secret), ...(version ? { 'anthropic-version': version } : {}), accept: 'text/event-stream' };
+        : { 'content-type': 'application/json', ...authHeaders(secret, endpointFor(key, format)), accept: 'text/event-stream' };
       body = format === 'openai'
         ? { ...payload, stream: true, stream_options: { include_usage: true } }
         : { ...payload, stream: true };
@@ -124,18 +130,22 @@ async function openStream(payload, signal, onKeySwitch, format = 'anthropic') {
         }
       } catch (e) { if (signal?.aborted) throw e; }
     }
-    // A request problem (bad model name, unsupported tool, etc.): switching keys won't help.
+    // Model not offered for this key's group: try the next key (it may be in another group), no cooldown.
     if (isModelProblem(text)) {
-      const err = new Error(`This model isn't available through your API provider (${payload.model}). Pick another model, or ask an admin to update Admin › Models. Details: ${msg}`);
-      err.requestError = true;
-      throw err;
+      modelErrors.push(`${key.label}: ${msg}`);
+      continue;
     }
     db.prepare('UPDATE api_keys SET last_error = ? WHERE id = ?').run(msg, key.id);
     const err = new Error(msg);
     err.requestError = true;
     throw err;
   }
-  throw new Error(`Every API key failed. ${errors.join(' | ')}`);
+  if (modelErrors.length && !errors.length) {
+    const err = new Error(`This model isn't available on any of your API keys (${payload.model}). Your provider has no working channel for it on these keys' groups. Try another model, or add a key from a group that includes it. Details: ${modelErrors.join(' | ')}`);
+    err.requestError = true;
+    throw err;
+  }
+  throw new Error(`Every API key failed. ${[...modelErrors, ...errors].join(' | ')}`);
 }
 
 /**

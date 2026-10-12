@@ -563,7 +563,7 @@ admin.post('/keys/:id/test', async (req, res) => {
     const r = await fetch(endpointFor(k, isOpenAI ? 'openai' : 'anthropic'), {
       method: 'POST',
       headers: isOpenAI ? { 'content-type': 'application/json', authorization: `Bearer ${secret}` }
-                        : { 'content-type': 'application/json', ...authHeaders(secret), ...(getSetting('anthropic_version')?.trim() ? { 'anthropic-version': getSetting('anthropic_version').trim() } : {}) },
+                        : { 'content-type': 'application/json', ...authHeaders(secret, endpointFor(k, 'anthropic')) },
       body: JSON.stringify({ model: model.id, max_tokens: 8, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
       signal: AbortSignal.timeout(30000),
     });
@@ -606,7 +606,7 @@ admin.get('/models/remote', async (req, res) => {
   const endpoint = k.endpoint || getSetting('default_endpoint');
   const url = endpoint.replace(/\/messages\/?$/, '/models');
   try {
-    const r = await fetch(url, { headers: { ...authHeaders(sec.decrypt(k.key_enc)), ...(getSetting('anthropic_version')?.trim() ? { 'anthropic-version': getSetting('anthropic_version').trim() } : {}) }, signal: AbortSignal.timeout(20000) });
+    const r = await fetch(url, { headers: authHeaders(sec.decrypt(k.key_enc), endpoint), signal: AbortSignal.timeout(20000) });
     const text = await r.text();
     if (!r.ok) return bad(res, `The provider didn't return a model list (HTTP ${r.status}). Check its website for model names instead.`);
     const j = J(text, {});
