@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Claude Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-mark"><div class="glyph">C</div><span>Claude Console</span></div>
+
+    <form id="loginForm" class="hidden">
+      <h1>Sign in</h1>
+      <p>Use the account your admin gave you.</p>
+      <div class="field"><label for="lu">Username</label><input class="input" id="lu" autocomplete="username" required autofocus></div>
+      <div class="field"><label for="lp">Password</label><input class="input" id="lp" type="password" autocomplete="current-password" required></div>
+      <div class="form-error" id="lErr"></div>
+      <button class="btn primary" style="width:100%;height:40px" type="submit">Sign in</button>
+      <div class="auth-notice hidden" id="notice"></div>
+    </form>
+
+    <form id="setupForm" class="hidden">
+      <h1>Create the admin account</h1>
+      <p>This is the first run. The account you create here manages API keys, staff and limits.</p>
+      <div class="field hidden" id="tokWrap"><label for="st">Setup token</label><input class="input mono" id="st" autocomplete="off">
+        <span class="hint">The SETUP_TOKEN value from your server settings.</span></div>
+      <div class="field"><label for="sn">Your name</label><input class="input" id="sn" autocomplete="name"></div>
+      <div class="field"><label for="su">Username</label><input class="input" id="su" autocomplete="username" required></div>
+      <div class="field"><label for="sp">Password</label><input class="input" id="sp" type="password" autocomplete="new-password" required minlength="10">
+        <span class="hint">At least 10 characters.</span></div>
+      <div class="form-error" id="sErr"></div>
+      <button class="btn primary" style="width:100%;height:40px" type="submit">Create admin account</button>
+    </form>
+  </div>
+</div>
+<script src="/js/common.js"></script>
+<script>
+(async () => {
+  const s = await api('/api/setup-status');
+  if (s.needsSetup) { $('#setupForm').classList.remove('hidden'); $('#su').focus(); if (s.tokenRequired) $('#tokWrap').classList.remove('hidden'); }
+  else {
+    $('#loginForm').classList.remove('hidden'); $('#lu').focus();
+    if (s.notice) { $('#notice').textContent = s.notice; $('#notice').classList.remove('hidden'); }
+  }
+})();
+
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault(); $('#lErr').textContent = '';
+  try {
+    const r = await api('/api/login', { body: { username: $('#lu').value.trim(), password: $('#lp').value } });
+    location.href = r.role === 'admin' ? '/admin' : '/chat';
+  } catch (err) { $('#lErr').textContent = err.message; }
+});
+
+$('#setupForm').addEventListener('submit', async (e) => {
+  e.preventDefault(); $('#sErr').textContent = '';
+  try {
+    await api('/api/setup', { body: { setup_token: $('#st').value.trim(), display_name: $('#sn').value.trim(), username: $('#su').value.trim(), password: $('#sp').value } });
+    location.href = '/admin';
+  } catch (err) { $('#sErr').textContent = err.message; }
+});
+</script>
+</body>
+</html>

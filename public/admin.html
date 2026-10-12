@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin · Claude Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="admin-shell">
+  <nav class="admin-nav" id="nav" aria-label="Admin sections">
+    <div class="brand"><div class="glyph">C</div>Admin</div>
+    <button data-page="overview"></button>
+    <button data-page="staff"></button>
+    <button data-page="keys"></button>
+    <button data-page="models"></button>
+    <button data-page="reports"></button>
+    <button data-page="chats"></button>
+    <button data-page="templates"></button>
+    <button data-page="settings"></button>
+    <div class="bottom">
+      <button id="toChat"></button>
+      <button id="logout"></button>
+    </div>
+  </nav>
+  <main class="admin-main"><div class="admin-inner" id="page"></div></main>
+</div>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<script src="/vendor/highlight.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/admin.js"></script>
+</body>
+</html>

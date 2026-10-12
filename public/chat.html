@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/vendor/highlight.css">
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <div class="side-head">
+      <div class="brand"><div class="glyph">C</div>Claude Console</div>
+      <button class="btn primary" id="newChat" style="width:100%"></button>
+      <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input class="input" id="chatSearch" placeholder="Search chats" aria-label="Search chats"></div>
+    </div>
+    <nav class="chat-list" id="chatList" aria-label="Chats"></nav>
+    <div class="side-foot">
+      <div class="avatar" id="avatar"></div>
+      <div class="who"><b id="whoName"></b><small id="whoRole"></small></div>
+      <button class="icon-btn" id="userMenuBtn" aria-label="Account menu" aria-haspopup="true"></button>
+      <div class="menu hidden" id="userMenu" role="menu"></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-toggle" id="menuToggle" aria-label="Open chat list"></button>
+      <div class="title" id="chatTitle" title="Click to rename">New chat</div>
+      <div class="spacer"></div>
+      <span class="chat-cost" id="chatCost" title="Total cost of this chat"></span>
+      <button class="icon-btn" id="systemBtn" aria-label="System prompt for this chat" title="System prompt for this chat"></button>
+      <select class="model-select" id="modelSelect" aria-label="Model"></select>
+    </header>
+
+    <div class="workspace">
+      <div class="thread-col">
+        <div class="thread" id="thread"><div class="thread-inner" id="threadInner"></div></div>
+
+        <div class="composer-wrap">
+          <div class="composer" id="composer">
+            <div class="pending hidden" id="pending"></div>
+            <textarea id="input" rows="1" placeholder="Message Claude" aria-label="Message"></textarea>
+            <div class="composer-bar">
+              <input type="file" id="fileInput" multiple class="hidden">
+              <button class="icon-btn" id="attachBtn" title="Attach files (images, PDFs, text and code)" aria-label="Attach files"></button>
+              <div style="position:relative">
+                <button class="icon-btn" id="tplBtn" title="Prompt templates" aria-label="Prompt templates"></button>
+                <div class="tpl-pop hidden" id="tplPop"></div>
+              </div>
+              <span class="sep"></span>
+              <button class="icon-btn" id="thinkBtn" title="Extended thinking" aria-label="Extended thinking" aria-pressed="false"></button>
+              <label class="budget" id="budgetWrap" title="Thinking budget (tokens)">
+                <input type="range" id="budget" min="1024" max="32000" step="1024" value="8192" aria-label="Thinking budget">
+                <span id="budgetVal">8k</span>
+              </label>
+              <button class="icon-btn" id="searchBtn" title="Web search" aria-label="Web search" aria-pressed="false"></button>
+              <div class="spacer"></div>
+              <button class="send-btn" id="sendBtn" aria-label="Send" disabled></button>
+            </div>
+          </div>
+          <div class="status-line" id="statusLine"></div>
+        </div>
+      </div>
+
+      <section class="artifact-panel hidden" id="artifactPanel" aria-label="Preview">
+        <div class="artifact-head">
+          <span class="name" id="artName">Preview</span>
+          <div class="seg"><button class="on" data-view="preview">Preview</button><button data-view="code">Code</button></div>
+          <button class="icon-btn" id="artCopy" title="Copy code" aria-label="Copy code"></button>
+          <button class="icon-btn" id="artDownload" title="Download" aria-label="Download"></button>
+          <button class="icon-btn" id="artClose" title="Close preview" aria-label="Close preview"></button>
+        </div>
+        <div class="artifact-body" id="artBody"></div>
+      </section>
+    </div>
+  </main>
+</div>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<script src="/vendor/highlight.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/chat.js"></script>
+</body>
+</html>

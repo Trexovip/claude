@@ -1,0 +1,17 @@
+{
+  "name": "claude-console",
+  "version": "1.0.0",
+  "description": "Self-hosted team chat for Anthropic-format APIs (Tokenhot by default) with admin and staff panels.",
+  "main": "server.js",
+  "private": true,
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server.js"
+  },
+  "dependencies": {
+    "@highlightjs/cdn-assets": "11.11.1",
+    "dompurify": "3.4.16",
+    "express": "5.1.0",
+    "marked": "15.0.12"
+  }
+}
