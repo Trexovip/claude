@@ -12,6 +12,26 @@ const SETUP_TOKEN = process.env.SETUP_TOKEN || '';
 const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY === '1' || ON_RAILWAY);
 
+// ---------- Built-in default API key ----------
+// Added once on first start (Tokenhot endpoint). Edit, replace or delete it in Admin > API keys;
+// once removed it is not re-added. Set the DEFAULT_API_KEY variable to override this value.
+const BUILT_IN_KEY = 'sk-2XlV77FHYySmp2caifBX6NrK3EWNzNR4x22tI71KtXS0f5Cc';
+(function seedDefaultKey() {
+  const key = (process.env.DEFAULT_API_KEY || BUILT_IN_KEY).trim();
+  if (!key || getSetting('default_key_seeded') === '1') return;
+  const existing = db.prepare('SELECT id, key_enc FROM api_keys').all();
+  const already = existing.some(k => { try { return sec.decrypt(k.key_enc) === key; } catch { return false; } });
+  if (!already) {
+    tx(() => {
+      db.prepare('UPDATE api_keys SET priority = priority + 1').run();
+      db.prepare('INSERT INTO api_keys (label, key_enc, key_hint, endpoint, priority, created_at) VALUES (?,?,?,?,?,?)')
+        .run('Default (Tokenhot)', sec.encrypt(key), `…${key.slice(-4)}`, null, 0, Date.now());
+    });
+    console.log('  Added the default API key (Tokenhot). Manage it in Admin > API keys.');
+  }
+  setSetting('default_key_seeded', '1');
+})();
+
 // Read a variable tolerantly: trims spaces and stray surrounding quotes from pasted values.
 const envVal = (name) => {
   const v = process.env[name] ?? process.env[name.toLowerCase()];

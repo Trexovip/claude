@@ -79,6 +79,12 @@ Everything lives in the `data/` folder:
 
 Alternatively, set the environment variable `APP_SECRET` to a long random string and the server uses that instead of `secret.key`.
 
+## Default API key
+
+A Tokenhot key is built into `server.js` (`BUILT_IN_KEY`). On first start it's added to **Admin › API keys** as "Default (Tokenhot)", at the top of the list, with the Tokenhot endpoint. You can edit, replace, disable or delete it there. Once you delete it, it isn't added again.
+
+To use a different default without editing code, set the `DEFAULT_API_KEY` variable (for example, in Railway). If your project is on GitHub, keep the repository **private**, because the built-in key is readable in the code.
+
 ## Deploying on Railway
 
 The project includes a `Dockerfile` and `railway.json`, so Railway builds it without extra setup. Railway serves it over HTTPS automatically.
@@ -124,6 +130,7 @@ pm2 start npm --name claude-console -- start
 | `TRUST_PROXY` | off | Set to `1` behind a reverse proxy (automatic on Railway) |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | — | Create the first admin on startup |
 | `SETUP_TOKEN` | — | Require this token on the browser setup page |
+| `DEFAULT_API_KEY` | built-in key | Default API key added on first start |
 
 ## Notes
 

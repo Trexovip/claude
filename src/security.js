@@ -94,6 +94,9 @@ function requireAdmin(req, res, next) {
 function csrfGuard(req, res, next) {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
     const ct = req.headers['content-type'] || '';
+    const hasBody = Number(req.headers['content-length'] || 0) > 0 || !!req.headers['transfer-encoding'];
+    // Body-less DELETEs are allowed (SameSite=Strict cookies already block cross-site requests).
+    if (req.method === 'DELETE' && !hasBody) return next();
     if (!ct.includes('application/json')) return res.status(415).json({ error: 'Requests must be JSON.' });
   }
   next();
